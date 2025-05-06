@@ -4,30 +4,50 @@ A comprehensive bash script to secure and set up a new VPS (Virtual Private Serv
 
 ## Features
 
-- System updates and essential package installation
-- Creation of a non-root admin user with sudo privileges
-- Team access management
+- **Cross-Distribution Compatibility**
+  - Works on Debian/Ubuntu, RHEL/CentOS/Fedora, Arch Linux, and openSUSE
+  - Automatically detects the distribution and adapts configurations
+  - Uses appropriate package managers (apt, dnf/yum, pacman, zypper)
+  - Handles distribution-specific paths and service names
+- **System Updates and Package Management**
+  - Updates system packages using the native package manager
+  - Installs essential security and utility packages
+  - Handles package availability differences between distributions
+- **Team Access Management**
   - Multiple SSH key support
   - Create multiple user accounts for team members
   - Individual SSH key management for each team member
   - Configurable sudo privileges for team members
-- Secure SSH configuration
+- **Secure SSH Configuration**
   - Custom SSH port
   - Disable root login
   - Strong ciphers and algorithms
   - Public key authentication support
-- Firewall setup with UFW (Uncomplicated Firewall)
-- Intrusion prevention with fail2ban
-- Automatic security updates
-- System hardening
+- **Firewall Configuration**
+  - UFW for Debian and Arch-based systems
+  - firewalld for RHEL and SUSE-based systems
+  - Proper integration with fail2ban
+- **Intrusion Prevention with fail2ban**
+  - Customized for each distribution
+  - Proper log path detection
+  - Integration with the appropriate firewall
+- **Automatic Security Updates**
+  - unattended-upgrades for Debian/Ubuntu
+  - dnf-automatic for RHEL/CentOS/Fedora
+  - systemd timers for Arch and SUSE
+- **System Hardening**
   - Secure shared memory
   - Disable core dumps
   - Secure sysctl settings
-- Timezone and hostname configuration
+- **Timezone and Hostname Configuration**
 
 ## Requirements
 
-- A fresh VPS with a Debian-based distribution (Ubuntu, Debian)
+- A fresh VPS with any of these Linux distributions:
+  - Debian-based: Ubuntu, Debian, Linux Mint, Pop!\_OS, etc.
+  - Red Hat-based: RHEL, CentOS, Fedora, Rocky Linux, AlmaLinux, etc.
+  - Arch-based: Arch Linux, Manjaro, EndeavourOS, etc.
+  - SUSE-based: openSUSE, SLES, etc.
 - Root access to the server
 
 ## Usage
