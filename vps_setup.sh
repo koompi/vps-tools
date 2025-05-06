@@ -87,26 +87,59 @@ apt upgrade -y
 
 # Install essential packages
 print_message "Installing essential packages..." $GREEN
-apt install -y \
-    sudo \
-    ufw \
-    fail2ban \
-    unattended-upgrades \
-    apt-listchanges \
-    logwatch \
-    apticron \
-    curl \
-    wget \
-    vim \
-    htop \
-    tmux \
-    git \
-    mlocate \
-    net-tools \
-    ca-certificates \
-    gnupg \
-    lsb-release \
-    apt-transport-https
+
+# Define package groups for better error handling
+ESSENTIAL_PACKAGES="sudo ufw fail2ban curl wget vim"
+SECURITY_PACKAGES="unattended-upgrades apt-listchanges logwatch"
+UTILITY_PACKAGES="htop tmux git net-tools ca-certificates gnupg lsb-release apt-transport-https"
+OPTIONAL_PACKAGES="apticron mlocate"
+
+# Install packages with error handling
+install_packages() {
+    local package_list="$1"
+    local description="$2"
+    local is_optional="$3"
+
+    print_message "Installing $description packages..." $GREEN
+
+    for package in $package_list; do
+        if apt-cache show $package &>/dev/null; then
+            apt install -y $package
+            if [ $? -eq 0 ]; then
+                print_message "✓ Installed $package" $GREEN
+            else
+                if [ "$is_optional" = "true" ]; then
+                    print_message "⚠ Failed to install optional package: $package" $YELLOW
+                else
+                    print_message "✗ Failed to install package: $package" $RED
+                fi
+            fi
+        else
+            if [ "$is_optional" = "true" ]; then
+                print_message "⚠ Optional package not found: $package" $YELLOW
+            else
+                print_message "⚠ Package not found: $package, continuing anyway" $YELLOW
+            fi
+        fi
+    done
+}
+
+# Install package groups
+install_packages "$ESSENTIAL_PACKAGES" "essential" "false"
+install_packages "$SECURITY_PACKAGES" "security" "false"
+install_packages "$UTILITY_PACKAGES" "utility" "false"
+install_packages "$OPTIONAL_PACKAGES" "optional" "true"
+
+# Try to install locate functionality (different package names in different distros)
+if ! command -v locate &>/dev/null; then
+    if apt-cache show mlocate &>/dev/null; then
+        apt install -y mlocate
+    elif apt-cache show plocate &>/dev/null; then
+        apt install -y plocate
+    else
+        print_message "⚠ No locate package found (mlocate/plocate). File search functionality will be limited." $YELLOW
+    fi
+fi
 
 # Set timezone
 print_message "Setting timezone to $TIMEZONE..." $GREEN
@@ -228,21 +261,41 @@ if [[ "$SETUP_UFW" == "y" || "$SETUP_UFW" == "Y" ]]; then
     print_section "CONFIGURING FIREWALL (UFW)"
     print_message "Setting up UFW firewall..." $GREEN
 
-    # Reset UFW config
-    ufw --force reset
+    # Check if UFW is installed
+    if ! command -v ufw &>/dev/null; then
+        print_message "UFW not found. Attempting to install..." $YELLOW
+        apt update
+        apt install -y ufw
 
-    # Set default policies
-    ufw default deny incoming
-    ufw default allow outgoing
+        # Check again if installation was successful
+        if ! command -v ufw &>/dev/null; then
+            print_message "Failed to install UFW. Firewall setup will be skipped." $RED
+            SETUP_UFW="n"
+        fi
+    fi
 
-    # Allow SSH
-    ufw allow $SSH_PORT/tcp comment 'Allow SSH'
+    if [[ "$SETUP_UFW" == "y" || "$SETUP_UFW" == "Y" ]]; then
+        # Reset UFW config
+        ufw --force reset
 
-    # Enable UFW
-    print_message "Enabling UFW..." $GREEN
-    ufw --force enable
+        # Set default policies
+        ufw default deny incoming
+        ufw default allow outgoing
 
-    print_message "UFW configured and enabled" $GREEN
+        # Allow SSH
+        ufw allow $SSH_PORT/tcp comment 'Allow SSH'
+
+        # Enable UFW
+        print_message "Enabling UFW..." $GREEN
+        ufw --force enable
+
+        # Verify UFW is running
+        if systemctl is-active --quiet ufw; then
+            print_message "UFW configured and enabled successfully" $GREEN
+        else
+            print_message "Warning: UFW may not be running. Check status with 'systemctl status ufw'" $YELLOW
+        fi
+    fi
 else
     print_message "Skipping UFW setup" $YELLOW
 fi
@@ -252,29 +305,52 @@ if [[ "$SETUP_FAIL2BAN" == "y" || "$SETUP_FAIL2BAN" == "Y" ]]; then
     print_section "CONFIGURING FAIL2BAN"
     print_message "Setting up fail2ban..." $GREEN
 
-    # Create fail2ban jail.local
-    cat > /etc/fail2ban/jail.local << EOL
+    # Check if fail2ban is installed
+    if ! command -v fail2ban-server &>/dev/null; then
+        print_message "fail2ban not found. Attempting to install..." $YELLOW
+        apt update
+        apt install -y fail2ban
+
+        # Check again if installation was successful
+        if ! command -v fail2ban-server &>/dev/null; then
+            print_message "Failed to install fail2ban. Setup will be skipped." $RED
+            SETUP_FAIL2BAN="n"
+        fi
+    fi
+
+    if [[ "$SETUP_FAIL2BAN" == "y" || "$SETUP_FAIL2BAN" == "Y" ]]; then
+        # Check if fail2ban directory exists
+        if [ ! -d "/etc/fail2ban" ]; then
+            print_message "fail2ban configuration directory not found. Creating..." $YELLOW
+            mkdir -p /etc/fail2ban
+        fi
+
+        # Create fail2ban jail.local
+        cat > /etc/fail2ban/jail.local << EOL
 [DEFAULT]
 bantime = 1h
 findtime = 10m
 maxretry = 5
-banaction = ufw
+banaction = $(if command -v ufw &>/dev/null; then echo "ufw"; else echo "iptables-multiport"; fi)
 backend = auto
 
 [sshd]
 enabled = true
 port = $SSH_PORT
 filter = sshd
-logpath = /var/log/auth.log
+logpath = $(if [ -f "/var/log/auth.log" ]; then echo "/var/log/auth.log"; else echo "/var/log/secure"; fi)
 maxretry = 3
 bantime = 1d
 EOL
 
-    # Restart fail2ban
-    systemctl restart fail2ban
-    systemctl enable fail2ban
-
-    print_message "fail2ban configured and enabled" $GREEN
+        # Restart fail2ban
+        if systemctl restart fail2ban; then
+            systemctl enable fail2ban
+            print_message "fail2ban configured and enabled successfully" $GREEN
+        else
+            print_message "Warning: Failed to restart fail2ban. Check status with 'systemctl status fail2ban'" $RED
+        fi
+    fi
 else
     print_message "Skipping fail2ban setup" $YELLOW
 fi
@@ -284,21 +360,42 @@ if [[ "$AUTO_UPDATES" == "y" || "$AUTO_UPDATES" == "Y" ]]; then
     print_section "CONFIGURING AUTOMATIC UPDATES"
     print_message "Setting up automatic security updates..." $GREEN
 
-    # Configure unattended-upgrades
-    cat > /etc/apt/apt.conf.d/20auto-upgrades << EOL
+    # Check if unattended-upgrades is installed
+    if ! dpkg -l | grep -q unattended-upgrades; then
+        print_message "unattended-upgrades not found. Attempting to install..." $YELLOW
+        apt update
+        apt install -y unattended-upgrades apt-listchanges
+
+        # Check again if installation was successful
+        if ! dpkg -l | grep -q unattended-upgrades; then
+            print_message "Failed to install unattended-upgrades. Setup will be skipped." $RED
+            AUTO_UPDATES="n"
+        fi
+    fi
+
+    if [[ "$AUTO_UPDATES" == "y" || "$AUTO_UPDATES" == "Y" ]]; then
+        # Make sure apt directory exists
+        mkdir -p /etc/apt/apt.conf.d/
+
+        # Configure unattended-upgrades
+        cat > /etc/apt/apt.conf.d/20auto-upgrades << EOL
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 APT::Periodic::AutocleanInterval "7";
 APT::Periodic::Download-Upgradeable-Packages "1";
 EOL
 
-    # Configure unattended-upgrades
-    cat > /etc/apt/apt.conf.d/50unattended-upgrades << EOL
+        # Configure unattended-upgrades with distro detection
+        DISTRO_ID=$(lsb_release -is 2>/dev/null || echo "Debian")
+        DISTRO_CODENAME=$(lsb_release -cs 2>/dev/null || echo "stable")
+
+        cat > /etc/apt/apt.conf.d/50unattended-upgrades << EOL
 Unattended-Upgrade::Allowed-Origins {
-    "\${distro_id}:\${distro_codename}";
-    "\${distro_id}:\${distro_codename}-security";
-    "\${distro_id}ESMApps:\${distro_codename}-apps-security";
-    "\${distro_id}ESM:\${distro_codename}-infra-security";
+    "${DISTRO_ID}:${DISTRO_CODENAME}";
+    "${DISTRO_ID}:${DISTRO_CODENAME}-security";
+    "${DISTRO_ID}ESMApps:${DISTRO_CODENAME}-apps-security";
+    "${DISTRO_ID}ESM:${DISTRO_CODENAME}-infra-security";
+    "${DISTRO_ID}:${DISTRO_CODENAME}-updates";
 };
 Unattended-Upgrade::Package-Blacklist {
 };
@@ -313,7 +410,12 @@ Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Automatic-Reboot-Time "02:00";
 EOL
 
-    print_message "Automatic updates configured" $GREEN
+        # Enable the service
+        systemctl enable unattended-upgrades
+        systemctl restart unattended-upgrades
+
+        print_message "Automatic updates configured successfully" $GREEN
+    fi
 else
     print_message "Skipping automatic updates setup" $YELLOW
 fi
@@ -438,9 +540,13 @@ print_section "FINAL STEPS"
 print_message "Restarting SSH service..." $GREEN
 systemctl restart sshd
 
-# Update locate database
-print_message "Updating locate database..." $GREEN
-updatedb
+# Update locate database if available
+if command -v updatedb &>/dev/null; then
+    print_message "Updating locate database..." $GREEN
+    updatedb
+else
+    print_message "Locate database update skipped (updatedb not available)." $YELLOW
+fi
 
 # Final message
 print_section "SETUP COMPLETE"
